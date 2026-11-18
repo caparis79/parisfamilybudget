@@ -57,11 +57,9 @@ button[aria-pressed=true]{background:var(--accent);color:var(--accent-ink);borde
 
 <section id="login" class="panel hidden" style="max-width:380px;margin:60px auto">
   <h1>Household Budget</h1>
-  <p style="color:var(--muted)">Sign in with your household account.</p>
-  <label for="em">Email</label><input id="em" type="email" autocomplete="username">
-  <label for="pw" style="margin-top:10px">Password</label><input id="pw" type="password" autocomplete="current-password">
+  <p style="color:var(--muted)">Sign in with your Google account.</p>
   <p class="err" id="loginErr"></p>
-  <button class="primary" id="signIn">Sign in</button>
+  <button class="primary" id="signIn">Sign in with Google</button>
 </section>
 
 <section id="app" class="hidden">
@@ -150,15 +148,19 @@ $("date").value = today();
 auth.onAuthStateChanged(user => {
   $("login").classList.toggle("hidden", !!user);
   $("app").classList.toggle("hidden", !user);
-  if (user) { $("who").textContent = user.email.split("@")[0]; subscribePeriods(); subscribeCats(); }
+  if (user) { $("who").textContent = user.email; subscribePeriods(); subscribeCats(); }
   else { if (unsubP) unsubP(); if (unsubT) unsubT(); unsubP = unsubT = null; subId = null; if (unsubC) unsubC(); unsubC = null; }
 });
 $("signIn").onclick = async () => {
   $("loginErr").textContent = "";
-  try { await auth.signInWithEmailAndPassword($("em").value.trim(), $("pw").value); }
-  catch (e) { $("loginErr").textContent = "Couldn't sign in. Check your email and password."; }
+  const provider = new firebase.auth.GoogleAuthProvider();
+  provider.setCustomParameters({ prompt: "select_account" });
+  try { await auth.signInWithPopup(provider); }
+  catch (e) {
+    if (e.code === "auth/popup-blocked") { auth.signInWithRedirect(provider); return; }
+    if (e.code !== "auth/popup-closed-by-user" && e.code !== "auth/cancelled-popup-request") $("loginErr").textContent = "Couldn't sign in with Google. " + e.message;
+  }
 };
-$("pw").addEventListener("keydown", e => { if (e.key === "Enter") $("signIn").click(); });
 $("signOut").onclick = () => auth.signOut();
 
 function subscribePeriods() {
@@ -170,7 +172,7 @@ function subscribePeriods() {
       activeId = periods.some(p => p.id === saved) ? saved : (periods.length ? periods[periods.length-1].id : null);
     }
     renderTabs(); subscribeTx();
-  }, e => { $("tabs").innerHTML = `<p class="err">Couldn't load periods: ${esc(e.message)}</p>`; });
+  }, e => { $("noPeriod").classList.add("hidden"); $("tabs").innerHTML = `<p class="err">${e.code === "permission-denied" ? "This Google account isn't on the household list. Sign out, then sign in with a different account." : "Couldn't load periods: " + esc(e.message)}</p>`; });
 }
 
 function renderTabs() {
