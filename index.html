@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Household Spending</title>
+<style>
+:root{--bg:#eef2f4;--surface:#fff;--ink:#14232e;--muted:#5f7280;--line:#d5dde2;--accent:#0f766e;--accent-ink:#fff;--bad:#b4412f;--bar:#9ccfc8}
+@media (prefers-color-scheme:dark){:root{--bg:#0f1a21;--surface:#17252e;--ink:#e6eef2;--muted:#8fa3b0;--line:#2a3b46;--accent:#4fb8ad;--accent-ink:#0f1a21;--bad:#e88a76;--bar:#2c6b65}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.45 "Avenir Next","Segoe UI",system-ui,sans-serif}
+main{max-width:860px;margin:0 auto;padding:20px 16px 60px}
+h1{font-size:1.4rem;margin:0}
+header{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:18px}
+.num{font-variant-numeric:tabular-nums}
+.panel{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:16px;margin-bottom:16px}
+label{display:block;font-size:.85rem;color:var(--muted);margin-bottom:4px}
+input,select,button{font:inherit;color:inherit}
+input,select{width:100%;padding:9px 10px;border:1px solid var(--line);border-radius:6px;background:var(--bg)}
+button{padding:9px 16px;border:1px solid var(--line);border-radius:6px;background:var(--surface);cursor:pointer}
+button.primary{background:var(--accent);color:var(--accent-ink);border-color:var(--accent);font-weight:600}
+button.link{border:0;background:none;color:var(--muted);padding:4px 6px}
+button.link:hover{color:var(--ink)}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;align-items:end}
+.total{font-size:2.4rem;font-weight:700;letter-spacing:-.02em}
+.cat{display:grid;grid-template-columns:110px 1fr 90px;gap:10px;align-items:center;font-size:.92rem;margin-top:8px}
+.track{height:10px;background:var(--bg);border-radius:5px;overflow:hidden}
+.fill{height:100%;background:var(--bar)}
+.row{display:grid;grid-template-columns:92px 1fr auto auto;gap:10px;align-items:center;padding:10px 0;border-top:1px solid var(--line)}
+.row:first-child{border-top:0}
+.row small{color:var(--muted);display:block}
+.amt{font-weight:600;text-align:right}
+.empty{color:var(--muted);padding:8px 0}
+.err{color:var(--bad);font-size:.9rem;min-height:1.2em;margin-top:8px}
+.tools{display:flex;gap:10px;align-items:end;flex-wrap:wrap}
+.hidden{display:none}
+@media (max-width:560px){.row{grid-template-columns:72px 1fr auto}.row .acts{grid-column:2/4}.cat{grid-template-columns:90px 1fr 80px}}
+</style>
+</head>
+<body>
+<main>
+
+<section id="login" class="panel hidden" style="max-width:380px;margin:60px auto">
+  <h1>Household Spending</h1>
+  <p style="color:var(--muted)">Sign in with your household account.</p>
+  <label for="em">Email</label><input id="em" type="email" autocomplete="username">
+  <label for="pw" style="margin-top:10px">Password</label><input id="pw" type="password" autocomplete="current-password">
+  <p class="err" id="loginErr"></p>
+  <button class="primary" id="signIn">Sign in</button>
+</section>
+
+<section id="app" class="hidden">
+  <header>
+    <h1>Household Spending</h1>
+    <div><span id="who" style="color:var(--muted);font-size:.9rem"></span> <button class="link" id="signOut">Sign out</button></div>
+  </header>
+
+  <div class="panel">
+    <div class="tools">
+      <div><label for="month">Month</label><input id="month" type="month"></div>
+      <button id="csv">Export CSV</button>
+    </div>
+    <div class="total num" id="total">$0.00</div>
+    <div id="cats"></div>
+  </div>
+
+  <div class="panel">
+    <form id="form" class="grid" onsubmit="return false">
+      <div><label for="date">Date</label><input id="date" type="date" required></div>
+      <div style="grid-column:span 2"><label for="desc">What was it for?</label><input id="desc" required placeholder="Costco run"></div>
+      <div><label for="amount">Amount</label><input id="amount" type="number" step="0.01" min="0" inputmode="decimal" required></div>
+      <div><label for="cat">Category</label><select id="cat"></select></div>
+      <div><button class="primary" id="save" type="submit">Add expense</button> <button class="link hidden" id="cancel" type="button">Cancel</button></div>
+    </form>
+    <p class="err" id="formErr"></p>
+  </div>
+
+  <div class="panel" id="list"></div>
+</section>
+</main>
+
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+<script>
+// 1) Paste your Firebase web app config here (Project settings > Your apps)
+const firebaseConfig = {
+  apiKey: "AIzaSyArctgNlCFBL_JlU6O0nBX7C-7qrD0T_Uw",
+  authDomain: "paris-family-budget.firebaseapp.com",
+  projectId: "paris-family-budget",
+  storageBucket: "paris-family-budget.firebasestorage.app",
+  messagingSenderId: "852729416469",
+  appId: "1:852729416469:web:be4fb801651cd6ebc7f71c"
+};
+const CATEGORIES = ["Groceries","Dining","Housing","Utilities","Transport","Health","Shopping","Fun","Other"];
+
+firebase.initializeApp(firebaseConfig);
+const auth = firebase.auth(), db = firebase.firestore();
+const $ = id => document.getElementById(id);
+const money = n => n.toLocaleString("en-US",{style:"currency",currency:"USD"});
+const esc = s => String(s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const today = () => { const d=new Date(); return new Date(d-d.getTimezoneOffset()*6e4).toISOString().slice(0,10); };
+
+let unsub = null, items = [], editId = null;
+
+$("cat").innerHTML = CATEGORIES.map(c=>`<option>${c}</option>`).join("");
+$("date").value = today();
+$("month").value = today().slice(0,7);
+
+auth.onAuthStateChanged(user => {
+  $("login").classList.toggle("hidden", !!user);
+  $("app").classList.toggle("hidden", !user);
+  if (user) { $("who").textContent = user.email.split("@")[0]; subscribe(); }
+  else if (unsub) { unsub(); unsub = null; }
+});
+
+$("signIn").onclick = async () => {
+  $("loginErr").textContent = "";
+  try { await auth.signInWithEmailAndPassword($("em").value.trim(), $("pw").value); }
+  catch (e) { $("loginErr").textContent = "Couldn't sign in. Check your email and password."; }
+};
+$("pw").addEventListener("keydown", e => { if (e.key === "Enter") $("signIn").click(); });
+$("signOut").onclick = () => auth.signOut();
+$("month").onchange = subscribe;
+
+function subscribe() {
+  if (unsub) unsub();
+  const m = $("month").value; if (!m) return;
+  unsub = db.collection("expenses")
+    .where("date", ">=", m + "-01").where("date", "<=", m + "-31")
+    .orderBy("date", "desc")
+    .onSnapshot(snap => {
+      items = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      render();
+    }, e => { $("list").innerHTML = `<p class="err">Couldn't load expenses: ${esc(e.message)}</p>`; });
+}
+
+function render() {
+  const total = items.reduce((s, x) => s + x.amount, 0);
+  $("total").textContent = money(total);
+  const by = {};
+  items.forEach(x => by[x.category] = (by[x.category] || 0) + x.amount);
+  const max = Math.max(1, ...Object.values(by));
+  $("cats").innerHTML = Object.entries(by).sort((a,b)=>b[1]-a[1]).map(([c,v]) =>
+    `<div class="cat"><span>${esc(c)}</span><div class="track"><div class="fill" style="width:${v/max*100}%"></div></div><span class="num amt">${money(v)}</span></div>`).join("");
+  $("list").innerHTML = items.length ? items.map(x =>
+    `<div class="row"><span class="num">${x.date.slice(5).replace("-","/")}</span>
+     <span>${esc(x.description)}<small>${esc(x.category)} · ${esc(x.addedBy||"")}</small></span>
+     <span class="num amt">${money(x.amount)}</span>
+     <span class="acts"><button class="link" data-edit="${x.id}">Edit</button><button class="link" data-del="${x.id}">Delete</button></span></div>`).join("")
+    : `<p class="empty">No expenses this month. Add the first one above.</p>`;
+}
+
+$("list").onclick = async e => {
+  const id = e.target.dataset.del || e.target.dataset.edit; if (!id) return;
+  const x = items.find(i => i.id === id);
+  if (e.target.dataset.del) {
+    if (confirm(`Delete "${x.description}" (${money(x.amount)})?`)) await db.collection("expenses").doc(id).delete();
+  } else {
+    editId = id; $("date").value = x.date; $("desc").value = x.description;
+    $("amount").value = x.amount; $("cat").value = x.category;
+    $("save").textContent = "Save changes"; $("cancel").classList.remove("hidden");
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+};
+
+function resetForm() {
+  editId = null; $("desc").value = ""; $("amount").value = ""; $("date").value = today();
+  $("save").textContent = "Add expense"; $("cancel").classList.add("hidden");
+}
+$("cancel").onclick = resetForm;
+
+$("form").addEventListener("submit", async () => {
+  $("formErr").textContent = "";
+  const amount = Math.round(parseFloat($("amount").value) * 100) / 100;
+  if (!$("desc").value.trim() || !(amount >= 0) || !$("date").value) { $("formErr").textContent = "Fill in the date, description, and amount."; return; }
+  const data = { date: $("date").value, description: $("desc").value.trim(), amount, category: $("cat").value };
+  try {
+    if (editId) await db.collection("expenses").doc(editId).update(data);
+    else await db.collection("expenses").add({ ...data, addedBy: auth.currentUser.email.split("@")[0], createdAt: firebase.firestore.FieldValue.serverTimestamp() });
+    const m = data.date.slice(0,7);
+    if (m !== $("month").value) { $("month").value = m; subscribe(); }
+    resetForm();
+  } catch (e) { $("formErr").textContent = "Couldn't save: " + e.message; }
+});
+
+$("csv").onclick = () => {
+  const q = s => `"${String(s).replace(/"/g,'""')}"`;
+  const rows = [["Date","Description","Category","Amount","Added by"], ...items.map(x => [x.date,x.description,x.category,x.amount.toFixed(2),x.addedBy||""])];
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([rows.map(r => r.map(q).join(",")).join("\n")], { type: "text/csv" }));
+  a.download = `spending-${$("month").value}.csv`; a.click();
+};
+</script>
+</body>
+</html>
