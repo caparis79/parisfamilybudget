@@ -42,6 +42,7 @@ tr:last-child td{border-bottom:0}
 .err{color:var(--neg);font-size:.9rem;min-height:1.2em;margin:8px 0 0}
 .scroll{overflow-x:auto}
 .hidden{display:none}
+.track{flex:1;height:10px;background:var(--bg);border-radius:5px;overflow:hidden}.fill{height:100%;background:var(--accent)}
 @media (max-width:560px){.stats b{font-size:1.15rem}.wide{grid-column:span 1}}
 </style>
 </head>
@@ -78,11 +79,21 @@ tr:last-child td{border-bottom:0}
     </div>
 
     <div class="panel">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px"><b>Spending by category</b><button id="catBtn">Manage categories</button></div>
+      <div id="catMgr" class="hidden" style="margin:10px 0 14px">
+        <div style="display:flex;gap:8px"><input id="newCat" placeholder="New category, e.g. Groceries"><button class="primary" id="addCat">Add</button></div>
+        <div id="catList"></div>
+      </div>
+      <div class="scroll" id="breakdown"></div>
+    </div>
+
+    <div class="panel">
       <form id="form" class="grid" onsubmit="return false">
         <div><label for="date">Date</label><input id="date" type="date" required></div>
         <div class="wide"><label for="desc">Description</label><input id="desc" required placeholder="Paycheck, Costco run"></div>
         <div><label for="type">Type</label><select id="type"><option value="debit">Debit (money out)</option><option value="credit">Credit (money in)</option></select></div>
         <div><label for="amount">Amount</label><input id="amount" type="number" step="0.01" min="0" inputmode="decimal" required></div>
+        <div><label for="cat">Category</label><select id="cat"><option value="">Uncategorized</option></select></div>
         <div class="wide"><label for="notes">Notes</label><input id="notes" placeholder="Optional"></div>
         <div><button class="primary" id="save" type="submit">Add transaction</button> <button class="link hidden" id="cancel" type="button">Cancel</button></div>
       </form>
@@ -125,8 +136,8 @@ $("date").value = today();
 auth.onAuthStateChanged(user => {
   $("login").classList.toggle("hidden", !!user);
   $("app").classList.toggle("hidden", !user);
-  if (user) { $("who").textContent = user.email.split("@")[0]; subscribePeriods(); }
-  else { if (unsubP) unsubP(); if (unsubT) unsubT(); unsubP = unsubT = null; subId = null; }
+  if (user) { $("who").textContent = user.email.split("@")[0]; subscribePeriods(); subscribeCats(); }
+  else { if (unsubP) unsubP(); if (unsubT) unsubT(); unsubP = unsubT = null; subId = null; if (unsubC) unsubC(); unsubC = null; }
 });
 $("signIn").onclick = async () => {
   $("loginErr").textContent = "";
@@ -191,12 +202,13 @@ function render() {
   $("sCr").textContent = signed(cr); $("sDb").textContent = db_ ? signed(db_) : fmt(0);
   $("sNet").textContent = signed(net); $("sNet").className = "num " + (net < 0 ? "neg" : "pos");
   $("list").innerHTML = items.length
-    ? `<table><thead><tr><th>Date</th><th>Description</th><th class="r">Amount</th><th>Notes</th><th></th></tr></thead><tbody>` +
-      items.map(x => `<tr><td class="num">${showDate(x.date)}</td><td>${esc(x.description)}</td>
+    ? `<table><thead><tr><th>Date</th><th>Description</th><th>Category</th><th class="r">Amount</th><th>Notes</th><th></th></tr></thead><tbody>` +
+      items.map(x => `<tr><td class="num">${showDate(x.date)}</td><td>${esc(x.description)}</td><td class="note">${esc(catName(x.categoryId))}</td>
         <td class="r num amt ${x.amount < 0 ? "neg" : "pos"}">${signed(x.amount)}</td>
         <td class="note">${esc(x.notes || "")}</td>
         <td style="white-space:nowrap"><button class="link" data-edit="${x.id}">Edit</button><button class="link" data-del="${x.id}">Delete</button></td></tr>`).join("") + `</tbody></table>`
     : `<p class="empty">No transactions in this period yet. Add the first one above.</p>`;
+  renderBreakdown();
 }
 
 $("list").onclick = async e => {
@@ -207,7 +219,7 @@ $("list").onclick = async e => {
   } else {
     editId = id; $("date").value = x.date; $("desc").value = x.description;
     $("type").value = x.amount < 0 ? "debit" : "credit"; $("amount").value = Math.abs(x.amount);
-    $("notes").value = x.notes || "";
+    $("notes").value = x.notes || ""; $("cat").value = x.categoryId || "";
     $("save").textContent = "Save changes"; $("cancel").classList.remove("hidden");
     window.scrollTo({ top: 0, behavior: "smooth" });
   }
@@ -224,7 +236,7 @@ $("form").addEventListener("submit", async () => {
   const raw = Math.round(parseFloat($("amount").value) * 100) / 100;
   if (!$("desc").value.trim() || !(raw >= 0) || !$("date").value) { $("formErr").textContent = "Fill in the date, description, and amount."; return; }
   const data = { date: $("date").value, description: $("desc").value.trim(), notes: $("notes").value.trim(),
-                 amount: $("type").value === "debit" ? -raw : raw, periodId: activeId };
+                 amount: $("type").value === "debit" ? -raw : raw, periodId: activeId, categoryId: $("cat").value || null };
   try {
     if (editId) await db.collection("expenses").doc(editId).update(data);
     else await db.collection("expenses").add({ ...data, addedBy: auth.currentUser.email.split("@")[0], createdAt: firebase.firestore.FieldValue.serverTimestamp() });
@@ -235,11 +247,65 @@ $("form").addEventListener("submit", async () => {
 $("csv").onclick = () => {
   const q = s => `"${String(s).replace(/"/g,'""')}"`;
   const p = periods.find(p => p.id === activeId);
-  const rows = [["Date","Description","Amount","Notes","Added by"], ...items.map(x => [x.date,x.description,x.amount.toFixed(2),x.notes||"",x.addedBy||""])];
+  const rows = [["Date","Description","Category","Amount","Notes","Added by"], ...items.map(x => [x.date,x.description,x.categoryId ? catName(x.categoryId) : "",x.amount.toFixed(2),x.notes||"",x.addedBy||""])];
   const a = document.createElement("a");
   a.href = URL.createObjectURL(new Blob([rows.map(r => r.map(q).join(",")).join("\n")], { type: "text/csv" }));
   a.download = `budget-${(p ? p.name : "period").replace(/[^\w-]+/g,"-")}.csv`; a.click();
 };
+
+// ---- Categories ----
+let categories = [], unsubC = null;
+const catName = id => (categories.find(c => c.id === id) || {}).name || "Uncategorized";
+function subscribeCats() {
+  if (unsubC) unsubC();
+  unsubC = db.collection("categories").onSnapshot(snap => {
+    categories = snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a, b) => a.name.localeCompare(b.name));
+    renderCats(); render();
+  }, e => { $("breakdown").innerHTML = `<p class="err">Couldn't load categories: ${esc(e.message)}</p>`; });
+}
+function renderCats() {
+  const cur = $("cat").value;
+  $("cat").innerHTML = `<option value="">Uncategorized</option>` + categories.map(c => `<option value="${c.id}">${esc(c.name)}</option>`).join("");
+  $("cat").value = categories.some(c => c.id === cur) ? cur : "";
+  $("catList").innerHTML = categories.length ? categories.map(c =>
+    `<div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid var(--line)"><span>${esc(c.name)}</span><span><button class="link" data-ren="${c.id}">Rename</button><button class="link" data-rm="${c.id}">Remove</button></span></div>`).join("")
+    : `<p class="empty">No categories yet. Add your first one above.</p>`;
+}
+$("catBtn").onclick = () => $("catMgr").classList.toggle("hidden");
+$("addCat").onclick = addCat;
+$("newCat").addEventListener("keydown", e => { if (e.key === "Enter") addCat(); });
+async function addCat() {
+  const name = $("newCat").value.trim(); if (!name) return;
+  if (categories.some(c => c.name.toLowerCase() === name.toLowerCase())) { alert("That category already exists."); return; }
+  await db.collection("categories").add({ name, createdAt: firebase.firestore.FieldValue.serverTimestamp() });
+  $("newCat").value = "";
+}
+$("catList").onclick = async e => {
+  const c = categories.find(c => c.id === (e.target.dataset.ren || e.target.dataset.rm)); if (!c) return;
+  if (e.target.dataset.ren) {
+    const name = (prompt("Rename category:", c.name) || "").trim();
+    if (!name || name === c.name) return;
+    if (categories.some(o => o.id !== c.id && o.name.toLowerCase() === name.toLowerCase())) { alert("That category already exists."); return; }
+    await db.collection("categories").doc(c.id).update({ name });
+  } else if (confirm(`Remove "${c.name}"? Its transactions will show as Uncategorized.`)) {
+    await db.collection("categories").doc(c.id).delete();
+  }
+};
+function renderBreakdown() {
+  const g = {};
+  items.forEach(x => {
+    const k = categories.some(c => c.id === x.categoryId) ? x.categoryId : "";
+    g[k] = g[k] || { cr: 0, db: 0 };
+    if (x.amount < 0) g[k].db += -x.amount; else g[k].cr += x.amount;
+  });
+  const rows = Object.entries(g).map(([k, v]) => ({ name: k ? catName(k) : "Uncategorized", ...v })).sort((a, b) => b.db - a.db || b.cr - a.cr);
+  const tot = rows.reduce((s, r) => s + r.db, 0);
+  $("breakdown").innerHTML = rows.length
+    ? `<table><thead><tr><th>Category</th><th class="r">Debits</th><th class="r">Credits</th><th style="width:34%">Share of spending</th></tr></thead><tbody>` +
+      rows.map(r => { const pct = tot ? r.db / tot * 100 : 0;
+        return `<tr><td>${esc(r.name)}</td><td class="r num neg">${r.db ? "\u2212" + fmt(r.db) : "\u2014"}</td><td class="r num pos">${r.cr ? "+" + fmt(r.cr) : "\u2014"}</td><td><div style="display:flex;align-items:center;gap:8px"><div class="track"><div class="fill" style="width:${pct}%"></div></div><span class="num note">${pct.toFixed(0)}%</span></div></td></tr>`; }).join("") + `</tbody></table>`
+    : `<p class="empty">Add transactions to see spending by category.</p>`;
+}
 
 // ---- CSV import: adds rows to the currently open period ----
 $("importBtn").onclick = () => $("importFile").click();
@@ -277,7 +343,7 @@ async function importCsv(text) {
   const head = rows[0].map(h => h.trim().toLowerCase());
   const find = (...n) => head.findIndex(h => n.some(x => h.includes(x)));
   const iD = find("date"), iS = find("description", "desc", "payee", "merchant", "name"), iN = find("notes", "note", "memo", "comment");
-  const iA = find("amount"), iDb = find("debit"), iCr = find("credit");
+  const iA = find("amount"), iDb = find("debit"), iCr = find("credit"), iC = find("category");
   if (iD < 0 || iS < 0 || (iA < 0 && iDb < 0 && iCr < 0)) throw new Error("The first row must be headers including Date, Description, and Amount (or Debit/Credit) columns.");
   let recs = [], skipped = 0;
   for (const r of rows.slice(1)) {
@@ -286,19 +352,23 @@ async function importCsv(text) {
     if (iA >= 0) amt = parseMoney(r[iA]);
     else { const d = parseMoney(r[iDb]), c = parseMoney(r[iCr]); amt = (d == null && c == null) ? null : (c || 0) - Math.abs(d || 0); }
     if (!date || !desc || amt == null) { skipped++; continue; }
-    recs.push({ date, description: desc, notes: iN >= 0 ? (r[iN] || "").trim() : "", amount: Math.round(amt * 100) / 100 });
+    recs.push({ date, description: desc, notes: iN >= 0 ? (r[iN] || "").trim() : "", cat: iC >= 0 ? (r[iC] || "").trim() : "", amount: Math.round(amt * 100) / 100 });
   }
   if (!recs.length) throw new Error("No valid rows found. Check the date and amount formats.");
   if (iA >= 0 && recs.every(x => x.amount >= 0) &&
       confirm("Every amount in this file is positive.\n\nOK = treat them all as debits (money out)\nCancel = treat them all as credits (money in)"))
     recs = recs.map(x => ({ ...x, amount: -x.amount }));
+  const ids = {}; categories.forEach(c => ids[c.name.toLowerCase()] = c.id);
+  const newNames = {}; recs.forEach(r => { const k = r.cat.toLowerCase(); if (k && !ids[k] && !newNames[k]) newNames[k] = r.cat; });
+  const nn = Object.keys(newNames).length;
   const cr = recs.filter(x => x.amount > 0), dbt = recs.filter(x => x.amount < 0);
   const sum = a => a.reduce((s, x) => s + x.amount, 0);
-  if (!confirm(`Import ${recs.length} transactions into "${p.name}"?\n\nCredits: ${cr.length} (${signed(sum(cr))})\nDebits: ${dbt.length} (${signed(sum(dbt))})` + (skipped ? `\n\n${skipped} row(s) will be skipped (missing or unreadable date, description, or amount).` : ""))) return;
+  if (!confirm(`Import ${recs.length} transactions into "${p.name}"?\n\nCredits: ${cr.length} (${signed(sum(cr))})\nDebits: ${dbt.length} (${signed(sum(dbt))})` + (nn ? `\n\n${nn} new categor${nn === 1 ? "y" : "ies"} will be created.` : "") + (skipped ? `\n\n${skipped} row(s) will be skipped (missing or unreadable date, description, or amount).` : ""))) return;
+  for (const [k, n] of Object.entries(newNames)) ids[k] = (await db.collection("categories").add({ name: n, createdAt: firebase.firestore.FieldValue.serverTimestamp() })).id;
   const who = auth.currentUser.email.split("@")[0], pid = activeId;
   for (let i = 0; i < recs.length; i += 400) {
     const b = db.batch();
-    recs.slice(i, i + 400).forEach(r => b.set(db.collection("expenses").doc(), { ...r, periodId: pid, addedBy: who, createdAt: firebase.firestore.FieldValue.serverTimestamp() }));
+    recs.slice(i, i + 400).forEach(r => b.set(db.collection("expenses").doc(), { date: r.date, description: r.description, notes: r.notes, amount: r.amount, categoryId: ids[r.cat.toLowerCase()] || null, periodId: pid, addedBy: who, createdAt: firebase.firestore.FieldValue.serverTimestamp() }));
     await b.commit();
   }
   alert(`Imported ${recs.length} transactions.`);
