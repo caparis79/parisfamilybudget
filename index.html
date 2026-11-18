@@ -42,6 +42,8 @@ tr:last-child td{border-bottom:0}
 .err{color:var(--neg);font-size:.9rem;min-height:1.2em;margin:8px 0 0}
 .scroll{overflow-x:auto}
 .hidden{display:none}
+.sort{font-size:.85rem;padding:2px 0}.rowcat{padding:4px 6px;min-width:130px}
+.periodbar{display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap}.periodbar select{width:auto;min-width:200px;max-width:100%}
 .track{flex:1;height:10px;background:var(--bg);border-radius:5px;overflow:hidden}.fill{height:100%;background:var(--accent)}
 @media (max-width:560px){.stats b{font-size:1.15rem}.wide{grid-column:span 1}}
 </style>
@@ -64,7 +66,7 @@ tr:last-child td{border-bottom:0}
     <div><span id="who" style="color:var(--muted);font-size:.9rem"></span> <button class="link" id="signOut">Sign out</button></div>
   </header>
 
-  <div class="tabs" id="tabs" role="tablist"></div>
+  <div class="periodbar" id="tabs"></div>
 
   <div id="noPeriod" class="panel hidden">
     <p class="empty">No budget periods yet. Create one to start adding transactions.</p>
@@ -78,15 +80,12 @@ tr:last-child td{border-bottom:0}
       <div><small>Balance</small><b class="num" id="sNet">$0.00</b></div>
     </div>
 
-    <div class="panel">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px"><b>Spending by category</b><button id="catBtn">Manage categories</button></div>
-      <div id="catMgr" class="hidden" style="margin:10px 0 14px">
-        <div style="display:flex;gap:8px"><input id="newCat" placeholder="New category, e.g. Groceries"><button class="primary" id="addCat">Add</button></div>
-        <div id="catList"></div>
-      </div>
-      <div class="scroll" id="breakdown"></div>
+    <div class="tabs" id="views" role="tablist">
+      <button class="tab" role="tab" data-view="tx" aria-selected="true">Transactions</button>
+      <button class="tab" role="tab" data-view="cat" aria-selected="false">Categories</button>
     </div>
 
+    <div id="viewTx">
     <div class="panel">
       <form id="form" class="grid" onsubmit="return false">
         <div><label for="date">Date</label><input id="date" type="date" required></div>
@@ -103,6 +102,17 @@ tr:last-child td{border-bottom:0}
     <div class="panel">
       <div style="display:flex;justify-content:flex-end;gap:8px;margin-bottom:6px"><button id="importBtn">Import CSV</button><input type="file" id="importFile" accept=".csv,text/csv" class="hidden"><button id="csv">Export CSV</button></div>
       <div class="scroll" id="list"></div>
+    </div>
+    </div>
+    <div id="viewCat" class="hidden">
+    <div class="panel">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px"><b>Net by category</b><button id="catBtn">Manage categories</button></div>
+      <div id="catMgr" class="hidden" style="margin:10px 0 14px">
+        <div style="display:flex;gap:8px"><input id="newCat" placeholder="New category, e.g. Groceries"><button class="primary" id="addCat">Add</button></div>
+        <div id="catList"></div>
+      </div>
+      <div class="scroll" id="breakdown"></div>
+    </div>
     </div>
   </div>
 </section>
@@ -160,19 +170,17 @@ function subscribePeriods() {
 }
 
 function renderTabs() {
-  $("tabs").innerHTML = periods.map(p =>
-    `<button class="tab" role="tab" aria-selected="${p.id===activeId}" data-id="${p.id}">${esc(p.name)}</button>`).join("")
-    + `<button class="tab" id="newP">+ New period</button>`;
+  $("tabs").innerHTML = periods.length
+    ? `<label for="periodSel" style="margin:0">Budget period</label><select id="periodSel">${periods.slice().reverse().map(p => `<option value="${p.id}"${p.id === activeId ? " selected" : ""}>${esc(p.name)}</option>`).join("")}</select><button id="newP">+ New period</button>`
+    : "";
   $("noPeriod").classList.toggle("hidden", periods.length > 0);
   $("periodView").classList.toggle("hidden", !periods.length);
 }
 function selectPeriod(id) {
   activeId = id; store.set(id); resetForm(); renderTabs(); subscribeTx();
 }
-$("tabs").onclick = e => {
-  if (e.target.id === "newP") return addPeriod();
-  if (e.target.dataset.id) selectPeriod(e.target.dataset.id);
-};
+$("tabs").onclick = e => { if (e.target.id === "newP") addPeriod(); };
+$("tabs").onchange = e => { if (e.target.id === "periodSel") selectPeriod(e.target.value); };
 $("firstPeriod").onclick = addPeriod;
 
 async function addPeriod() {
@@ -202,8 +210,8 @@ function render() {
   $("sCr").textContent = signed(cr); $("sDb").textContent = db_ ? signed(db_) : fmt(0);
   $("sNet").textContent = signed(net); $("sNet").className = "num " + (net < 0 ? "neg" : "pos");
   $("list").innerHTML = items.length
-    ? `<table><thead><tr><th>Date</th><th>Description</th><th>Category</th><th class="r">Amount</th><th>Notes</th><th></th></tr></thead><tbody>` +
-      items.map(x => `<tr><td class="num">${showDate(x.date)}</td><td>${esc(x.description)}</td><td class="note">${esc(catName(x.categoryId))}</td>
+    ? `<table><thead><tr>${th("date","Date")}${th("description","Description")}${th("category","Category")}${th("amount","Amount","r")}${th("notes","Notes")}<th></th></tr></thead><tbody>` +
+      sortedItems().map(x => `<tr><td class="num">${showDate(x.date)}</td><td>${esc(x.description)}</td><td><select class="rowcat" data-cat="${x.id}" aria-label="Category">${catOptions(x.categoryId)}</select></td>
         <td class="r num amt ${x.amount < 0 ? "neg" : "pos"}">${signed(x.amount)}</td>
         <td class="note">${esc(x.notes || "")}</td>
         <td style="white-space:nowrap"><button class="link" data-edit="${x.id}">Edit</button><button class="link" data-del="${x.id}">Delete</button></td></tr>`).join("") + `</tbody></table>`
@@ -212,6 +220,8 @@ function render() {
 }
 
 $("list").onclick = async e => {
+  const k = e.target.dataset.sort;
+  if (k) { if (sortKey === k) sortDir = -sortDir; else { sortKey = k; sortDir = (k === "date" || k === "amount") ? -1 : 1; } render(); return; }
   const id = e.target.dataset.del || e.target.dataset.edit; if (!id) return;
   const x = items.find(i => i.id === id);
   if (e.target.dataset.del) {
@@ -293,19 +303,38 @@ $("catList").onclick = async e => {
 };
 function renderBreakdown() {
   const g = {};
-  items.forEach(x => {
-    const k = categories.some(c => c.id === x.categoryId) ? x.categoryId : "";
-    g[k] = g[k] || { cr: 0, db: 0 };
-    if (x.amount < 0) g[k].db += -x.amount; else g[k].cr += x.amount;
-  });
-  const rows = Object.entries(g).map(([k, v]) => ({ name: k ? catName(k) : "Uncategorized", ...v })).sort((a, b) => b.db - a.db || b.cr - a.cr);
-  const tot = rows.reduce((s, r) => s + r.db, 0);
+  items.forEach(x => { const k = categories.some(c => c.id === x.categoryId) ? x.categoryId : ""; g[k] = (g[k] || 0) + x.amount; });
+  const rows = Object.entries(g).map(([k, v]) => ({ name: k ? catName(k) : "Uncategorized", net: Math.round(v * 100) / 100 })).sort((a, b) => a.net - b.net);
+  const max = Math.max(0, ...rows.map(r => Math.abs(r.net)));
   $("breakdown").innerHTML = rows.length
-    ? `<table><thead><tr><th>Category</th><th class="r">Debits</th><th class="r">Credits</th><th style="width:34%">Share of spending</th></tr></thead><tbody>` +
-      rows.map(r => { const pct = tot ? r.db / tot * 100 : 0;
-        return `<tr><td>${esc(r.name)}</td><td class="r num neg">${r.db ? "\u2212" + fmt(r.db) : "\u2014"}</td><td class="r num pos">${r.cr ? "+" + fmt(r.cr) : "\u2014"}</td><td><div style="display:flex;align-items:center;gap:8px"><div class="track"><div class="fill" style="width:${pct}%"></div></div><span class="num note">${pct.toFixed(0)}%</span></div></td></tr>`; }).join("") + `</tbody></table>`
-    : `<p class="empty">Add transactions to see spending by category.</p>`;
+    ? `<table><thead><tr><th>Category</th><th class="r">Net</th><th style="width:34%"></th></tr></thead><tbody>` +
+      rows.map(r => { const cls = r.net < 0 ? "neg" : "pos", pct = max ? Math.abs(r.net) / max * 100 : 0;
+        return `<tr><td>${esc(r.name)}</td><td class="r num amt ${cls}">${signed(r.net)}</td><td><div class="track"><div class="fill" style="width:${pct}%;background:var(--${cls})"></div></div></td></tr>`; }).join("") + `</tbody></table>`
+    : `<p class="empty">Add transactions to see the net by category.</p>`;
 }
+
+// ---- Transactions / Categories views ----
+$("views").onclick = e => {
+  const v = e.target.dataset.view; if (!v) return;
+  $("viewTx").classList.toggle("hidden", v !== "tx");
+  $("viewCat").classList.toggle("hidden", v !== "cat");
+  $("views").querySelectorAll(".tab").forEach(b => b.setAttribute("aria-selected", b.dataset.view === v));
+};
+
+// ---- Sorting and inline category choice for the transaction list ----
+let sortKey = "date", sortDir = -1;
+const sortVal = (x, k) => k === "category" ? catName(x.categoryId).toLowerCase() : k === "amount" ? x.amount : String(x[k] || "").toLowerCase();
+const th = (k, label, cls) => `<th class="${cls || ""}"><button class="link sort" data-sort="${k}">${label}${sortKey === k ? (sortDir > 0 ? " \u25B2" : " \u25BC") : ""}</button></th>`;
+const sortedItems = () => items.slice().sort((a, b) => {
+  const A = sortVal(a, sortKey), B = sortVal(b, sortKey);
+  return A === B ? b.date.localeCompare(a.date) : (A < B ? -1 : 1) * sortDir;
+});
+const catOptions = sel => `<option value="">Uncategorized</option>` + categories.map(c => `<option value="${c.id}"${c.id === sel ? " selected" : ""}>${esc(c.name)}</option>`).join("");
+$("list").onchange = async e => {
+  if (!e.target.dataset.cat) return;
+  try { await db.collection("expenses").doc(e.target.dataset.cat).update({ categoryId: e.target.value || null }); }
+  catch (err) { alert("Couldn't change the category: " + err.message); }
+};
 
 // ---- CSV import: adds rows to the currently open period ----
 $("importBtn").onclick = () => $("importFile").click();
