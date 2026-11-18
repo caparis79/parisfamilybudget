@@ -44,6 +44,10 @@ tr:last-child td{border-bottom:0}
 .hidden{display:none}
 .sort{font-size:.85rem;padding:2px 0}.rowcat{padding:4px 6px;min-width:130px}
 .periodbar{display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap}.periodbar select{width:auto;min-width:200px;max-width:100%}
+.editing td{background:rgba(15,118,110,.08)}.editing input,.editing select{padding:5px 6px}.editing input[type=date]{min-width:130px}
+.amtcell{display:flex;gap:4px}.amtcell select{width:58px}.amtcell input{min-width:80px}
+button[aria-pressed=true]{background:var(--accent);color:var(--accent-ink);border-color:var(--accent)}
+.subtbl{margin:2px 0 8px;font-size:.92rem}
 .track{flex:1;height:10px;background:var(--bg);border-radius:5px;overflow:hidden}.fill{height:100%;background:var(--accent)}
 @media (max-width:560px){.stats b{font-size:1.15rem}.wide{grid-column:span 1}}
 </style>
@@ -106,7 +110,7 @@ tr:last-child td{border-bottom:0}
     </div>
     <div id="viewCat" class="hidden">
     <div class="panel">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px"><b>Net by category</b><button id="catBtn">Manage categories</button></div>
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px"><b>By category</b><span style="display:flex;gap:8px;flex-wrap:wrap"><button id="vGrid" aria-pressed="true">Grid</button><button id="vPie" aria-pressed="false">Pie chart</button><button id="catBtn">Manage categories</button></span></div>
       <div id="catMgr" class="hidden" style="margin:10px 0 14px">
         <div style="display:flex;gap:8px"><input id="newCat" placeholder="New category, e.g. Groceries"><button class="primary" id="addCat">Add</button></div>
         <div id="catList"></div>
@@ -177,7 +181,7 @@ function renderTabs() {
   $("periodView").classList.toggle("hidden", !periods.length);
 }
 function selectPeriod(id) {
-  activeId = id; store.set(id); resetForm(); renderTabs(); subscribeTx();
+  activeId = id; store.set(id); rowEditId = null; resetForm(); renderTabs(); subscribeTx();
 }
 $("tabs").onclick = e => { if (e.target.id === "newP") addPeriod(); };
 $("tabs").onchange = e => { if (e.target.id === "periodSel") selectPeriod(e.target.value); };
@@ -211,10 +215,7 @@ function render() {
   $("sNet").textContent = signed(net); $("sNet").className = "num " + (net < 0 ? "neg" : "pos");
   $("list").innerHTML = items.length
     ? `<table><thead><tr>${th("date","Date")}${th("description","Description")}${th("category","Category")}${th("amount","Amount","r")}${th("notes","Notes")}<th></th></tr></thead><tbody>` +
-      sortedItems().map(x => `<tr><td class="num">${showDate(x.date)}</td><td>${esc(x.description)}</td><td><select class="rowcat" data-cat="${x.id}" aria-label="Category">${catOptions(x.categoryId)}</select></td>
-        <td class="r num amt ${x.amount < 0 ? "neg" : "pos"}">${signed(x.amount)}</td>
-        <td class="note">${esc(x.notes || "")}</td>
-        <td style="white-space:nowrap"><button class="link" data-edit="${x.id}">Edit</button><button class="link" data-del="${x.id}">Delete</button></td></tr>`).join("") + `</tbody></table>`
+      sortedItems().map(rowHtml).join("") + `</tbody></table>`
     : `<p class="empty">No transactions in this period yet. Add the first one above.</p>`;
   renderBreakdown();
 }
@@ -222,16 +223,14 @@ function render() {
 $("list").onclick = async e => {
   const k = e.target.dataset.sort;
   if (k) { if (sortKey === k) sortDir = -sortDir; else { sortKey = k; sortDir = (k === "date" || k === "amount") ? -1 : 1; } render(); return; }
+  if (e.target.dataset.save) return saveRow(e.target.closest("tr"));
+  if (e.target.dataset.cancel) { rowEditId = null; render(); return; }
   const id = e.target.dataset.del || e.target.dataset.edit; if (!id) return;
   const x = items.find(i => i.id === id);
   if (e.target.dataset.del) {
     if (confirm(`Delete "${x.description}" (${signed(x.amount)})?`)) await db.collection("expenses").doc(id).delete();
   } else {
-    editId = id; $("date").value = x.date; $("desc").value = x.description;
-    $("type").value = x.amount < 0 ? "debit" : "credit"; $("amount").value = Math.abs(x.amount);
-    $("notes").value = x.notes || ""; $("cat").value = x.categoryId || "";
-    $("save").textContent = "Save changes"; $("cancel").classList.remove("hidden");
-    window.scrollTo({ top: 0, behavior: "smooth" });
+    rowEditId = id; render(); const f = document.querySelector('#list [data-f="description"]'); if (f) f.focus();
   }
 };
 
@@ -301,17 +300,84 @@ $("catList").onclick = async e => {
     await db.collection("categories").doc(c.id).delete();
   }
 };
+let catView = "grid", openCats = new Set(), rowEditId = null;
+const PALETTE = ["#0f766e", "#b4412f", "#2563eb", "#b45309", "#7c3aed", "#be185d", "#4d7c0f", "#0e7490", "#a16207", "#64748b"];
 function renderBreakdown() {
   const g = {};
-  items.forEach(x => { const k = categories.some(c => c.id === x.categoryId) ? x.categoryId : ""; g[k] = (g[k] || 0) + x.amount; });
-  const rows = Object.entries(g).map(([k, v]) => ({ name: k ? catName(k) : "Uncategorized", net: Math.round(v * 100) / 100 })).sort((a, b) => a.net - b.net);
-  const max = Math.max(0, ...rows.map(r => Math.abs(r.net)));
-  $("breakdown").innerHTML = rows.length
-    ? `<table><thead><tr><th>Category</th><th class="r">Net</th><th style="width:34%"></th></tr></thead><tbody>` +
-      rows.map(r => { const cls = r.net < 0 ? "neg" : "pos", pct = max ? Math.abs(r.net) / max * 100 : 0;
-        return `<tr><td>${esc(r.name)}</td><td class="r num amt ${cls}">${signed(r.net)}</td><td><div class="track"><div class="fill" style="width:${pct}%;background:var(--${cls})"></div></div></td></tr>`; }).join("") + `</tbody></table>`
-    : `<p class="empty">Add transactions to see the net by category.</p>`;
+  items.forEach(x => {
+    const k = categories.some(c => c.id === x.categoryId) ? x.categoryId : "none";
+    const o = g[k] = g[k] || { key: k, net: 0, db: 0, tx: [] };
+    o.net += x.amount; if (x.amount < 0) o.db += -x.amount; o.tx.push(x);
+  });
+  const rows = Object.values(g).map(o => ({ ...o, name: o.key === "none" ? "Uncategorized" : catName(o.key), net: Math.round(o.net * 100) / 100 }));
+  $("breakdown").innerHTML = !rows.length ? `<p class="empty">Add transactions to see the breakdown by category.</p>` : catView === "pie" ? pieHtml(rows) : gridHtml(rows);
 }
+const subTable = tx => `<table class="subtbl"><tbody>` + tx.slice().sort((a, b) => b.date.localeCompare(a.date)).map(x =>
+  `<tr><td class="num">${showDate(x.date)}</td><td>${esc(x.description)}</td><td class="r num amt ${x.amount < 0 ? "neg" : "pos"}">${signed(x.amount)}</td><td class="note">${esc(x.notes || "")}</td></tr>`).join("") + `</tbody></table>`;
+function gridHtml(rows) {
+  rows = rows.slice().sort((a, b) => a.net - b.net);
+  const max = Math.max(0, ...rows.map(r => Math.abs(r.net)));
+  return `<table><thead><tr><th>Category</th><th class="r">Net</th><th style="width:34%"></th></tr></thead><tbody>` + rows.map(r => {
+    const cls = r.net < 0 ? "neg" : "pos", pct = max ? Math.abs(r.net) / max * 100 : 0, open = openCats.has(r.key);
+    return `<tr><td><button class="link" data-roll="${r.key}" aria-expanded="${open}">${open ? "\u25BE" : "\u25B8"} ${esc(r.name)} <span class="note">(${r.tx.length})</span></button></td><td class="r num amt ${cls}">${signed(r.net)}</td><td><div class="track"><div class="fill" style="width:${pct}%;background:var(--${cls})"></div></div></td></tr>`
+      + (open ? `<tr><td colspan="3">${subTable(r.tx)}</td></tr>` : "");
+  }).join("") + `</tbody></table>`;
+}
+function pieHtml(rows) {
+  const sp = rows.filter(r => r.db > 0).sort((a, b) => b.db - a.db);
+  const tot = sp.reduce((s, r) => s + r.db, 0);
+  if (!tot) return `<p class="empty">No debits in this period, so there is no spending to chart.</p>`;
+  let ang = -Math.PI / 2; const R = 90, C = 100;
+  const slices = sp.map((r, i) => {
+    const f = r.db / tot, col = PALETTE[i % PALETTE.length];
+    if (f > 0.9999) return `<circle cx="${C}" cy="${C}" r="${R}" fill="${col}"><title>${esc(r.name)}: ${fmt(r.db)} (100%)</title></circle>`;
+    const a0 = ang, a1 = ang + f * 2 * Math.PI; ang = a1;
+    const pt = a => `${(C + R * Math.cos(a)).toFixed(2)},${(C + R * Math.sin(a)).toFixed(2)}`;
+    return `<path d="M${C},${C} L${pt(a0)} A${R},${R} 0 ${f > 0.5 ? 1 : 0} 1 ${pt(a1)} Z" fill="${col}" stroke="var(--surface)" stroke-width="2"><title>${esc(r.name)}: ${fmt(r.db)} (${(f * 100).toFixed(1)}%)</title></path>`;
+  }).join("");
+  const legend = sp.map((r, i) => `<div style="display:flex;align-items:center;gap:8px;padding:4px 0"><span style="width:12px;height:12px;border-radius:3px;background:${PALETTE[i % PALETTE.length]};flex:none"></span><span style="flex:1">${esc(r.name)}</span><span class="num neg amt">\u2212${fmt(r.db)}</span><span class="num note" style="width:44px;text-align:right">${(r.db / tot * 100).toFixed(0)}%</span></div>`).join("");
+  return `<div style="display:flex;gap:24px;flex-wrap:wrap;align-items:center"><svg viewBox="0 0 200 200" width="220" height="220" role="img" aria-label="Spending by category pie chart">${slices}</svg><div style="flex:1;min-width:220px">${legend}<p class="note" style="margin:8px 0 0">The pie shows spending (debits) only.</p></div></div>`;
+}
+function setCatView(v) {
+  catView = v; $("vGrid").setAttribute("aria-pressed", v === "grid"); $("vPie").setAttribute("aria-pressed", v === "pie"); renderBreakdown();
+}
+$("vGrid").onclick = () => setCatView("grid");
+$("vPie").onclick = () => setCatView("pie");
+$("breakdown").onclick = e => {
+  const b = e.target.closest("[data-roll]"); if (!b) return;
+  const k = b.dataset.roll; if (openCats.has(k)) openCats.delete(k); else openCats.add(k);
+  renderBreakdown();
+};
+
+// ---- Transaction rows, with in-place editing ----
+function rowHtml(x) {
+  if (x.id === rowEditId) {
+    return `<tr class="editing"><td><input type="date" data-f="date" value="${esc(x.date)}"></td>
+      <td><input data-f="description" value="${esc(x.description)}"></td>
+      <td><select class="rowcat" data-f="categoryId">${catOptions(x.categoryId)}</select></td>
+      <td><div class="amtcell"><select data-f="type" aria-label="Debit or credit"><option value="debit"${x.amount < 0 ? " selected" : ""}>\u2212</option><option value="credit"${x.amount < 0 ? "" : " selected"}>+</option></select><input type="number" step="0.01" min="0" inputmode="decimal" data-f="amount" value="${Math.abs(x.amount)}"></div></td>
+      <td><input data-f="notes" value="${esc(x.notes || "")}"></td>
+      <td style="white-space:nowrap"><button class="link" data-save="1">Save</button><button class="link" data-cancel="1">Cancel</button></td></tr>`;
+  }
+  return `<tr><td class="num">${showDate(x.date)}</td><td>${esc(x.description)}</td><td><select class="rowcat" data-cat="${x.id}" aria-label="Category">${catOptions(x.categoryId)}</select></td>
+    <td class="r num amt ${x.amount < 0 ? "neg" : "pos"}">${signed(x.amount)}</td>
+    <td class="note">${esc(x.notes || "")}</td>
+    <td style="white-space:nowrap"><button class="link" data-edit="${x.id}">Edit</button><button class="link" data-del="${x.id}">Delete</button></td></tr>`;
+}
+async function saveRow(tr) {
+  const v = f => tr.querySelector(`[data-f="${f}"]`).value;
+  const raw = Math.round(parseFloat(v("amount")) * 100) / 100;
+  if (!v("date") || !v("description").trim() || !(raw >= 0)) { alert("Fill in the date, description, and amount."); return; }
+  try {
+    await db.collection("expenses").doc(rowEditId).update({ date: v("date"), description: v("description").trim(), notes: v("notes").trim(), amount: v("type") === "debit" ? -raw : raw, categoryId: v("categoryId") || null });
+    rowEditId = null; render();
+  } catch (e) { alert("Couldn't save: " + e.message); }
+}
+$("list").addEventListener("keydown", e => {
+  if (!e.target.dataset.f) return;
+  if (e.key === "Enter") { e.preventDefault(); saveRow(e.target.closest("tr")); }
+  if (e.key === "Escape") { rowEditId = null; render(); }
+});
 
 // ---- Transactions / Categories views ----
 $("views").onclick = e => {
