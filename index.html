@@ -90,7 +90,7 @@ tr:last-child td{border-bottom:0}
     </div>
 
     <div class="panel">
-      <div style="display:flex;justify-content:flex-end;margin-bottom:6px"><button id="csv">Export CSV</button></div>
+      <div style="display:flex;justify-content:flex-end;gap:8px;margin-bottom:6px"><button id="importBtn">Import CSV</button><input type="file" id="importFile" accept=".csv,text/csv" class="hidden"><button id="csv">Export CSV</button></div>
       <div class="scroll" id="list"></div>
     </div>
   </div>
@@ -240,6 +240,69 @@ $("csv").onclick = () => {
   a.href = URL.createObjectURL(new Blob([rows.map(r => r.map(q).join(",")).join("\n")], { type: "text/csv" }));
   a.download = `budget-${(p ? p.name : "period").replace(/[^\w-]+/g,"-")}.csv`; a.click();
 };
+
+// ---- CSV import: adds rows to the currently open period ----
+$("importBtn").onclick = () => $("importFile").click();
+$("importFile").onchange = async e => {
+  const f = e.target.files[0]; e.target.value = ""; if (!f) return;
+  try { await importCsv(await f.text()); } catch (err) { alert("Import failed: " + err.message); }
+};
+function parseCsv(t) {
+  t = t.replace(/^\uFEFF/, ""); const rows = []; let row = [], cur = "", q = false;
+  for (let i = 0; i < t.length; i++) {
+    const c = t[i];
+    if (q) { if (c === '"') { if (t[i+1] === '"') { cur += '"'; i++; } else q = false; } else cur += c; }
+    else if (c === '"') q = true;
+    else if (c === ",") { row.push(cur); cur = ""; }
+    else if (c === "\n" || c === "\r") { if (c === "\r" && t[i+1] === "\n") i++; row.push(cur); cur = ""; if (row.some(x => x.trim())) rows.push(row); row = []; }
+    else cur += c;
+  }
+  row.push(cur); if (row.some(x => x.trim())) rows.push(row);
+  return rows;
+}
+function parseDate(s) {
+  s = String(s || "").trim(); let m;
+  if (m = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/)) return `${m[1]}-${m[2].padStart(2,"0")}-${m[3].padStart(2,"0")}`;
+  if (m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/)) { const y = m[3].length === 2 ? "20" + m[3] : m[3]; return `${y}-${m[1].padStart(2,"0")}-${m[2].padStart(2,"0")}`; }
+  const d = new Date(s); return isNaN(d) ? null : new Date(d - d.getTimezoneOffset()*6e4).toISOString().slice(0,10);
+}
+function parseMoney(s) {
+  s = String(s || "").trim(); if (!s) return null;
+  const neg = /^\(.*\)$/.test(s) || /^\$?-/.test(s) || /-$/.test(s);
+  const n = parseFloat(s.replace(/[^0-9.]/g, "")); return isNaN(n) ? null : (neg ? -n : n);
+}
+async function importCsv(text) {
+  const p = periods.find(p => p.id === activeId); if (!p) throw new Error("Open a budget period tab first.");
+  const rows = parseCsv(text); if (rows.length < 2) throw new Error("The file has no data rows.");
+  const head = rows[0].map(h => h.trim().toLowerCase());
+  const find = (...n) => head.findIndex(h => n.some(x => h.includes(x)));
+  const iD = find("date"), iS = find("description", "desc", "payee", "merchant", "name"), iN = find("notes", "note", "memo", "comment");
+  const iA = find("amount"), iDb = find("debit"), iCr = find("credit");
+  if (iD < 0 || iS < 0 || (iA < 0 && iDb < 0 && iCr < 0)) throw new Error("The first row must be headers including Date, Description, and Amount (or Debit/Credit) columns.");
+  let recs = [], skipped = 0;
+  for (const r of rows.slice(1)) {
+    const date = parseDate(r[iD]), desc = (r[iS] || "").trim();
+    let amt;
+    if (iA >= 0) amt = parseMoney(r[iA]);
+    else { const d = parseMoney(r[iDb]), c = parseMoney(r[iCr]); amt = (d == null && c == null) ? null : (c || 0) - Math.abs(d || 0); }
+    if (!date || !desc || amt == null) { skipped++; continue; }
+    recs.push({ date, description: desc, notes: iN >= 0 ? (r[iN] || "").trim() : "", amount: Math.round(amt * 100) / 100 });
+  }
+  if (!recs.length) throw new Error("No valid rows found. Check the date and amount formats.");
+  if (iA >= 0 && recs.every(x => x.amount >= 0) &&
+      confirm("Every amount in this file is positive.\n\nOK = treat them all as debits (money out)\nCancel = treat them all as credits (money in)"))
+    recs = recs.map(x => ({ ...x, amount: -x.amount }));
+  const cr = recs.filter(x => x.amount > 0), dbt = recs.filter(x => x.amount < 0);
+  const sum = a => a.reduce((s, x) => s + x.amount, 0);
+  if (!confirm(`Import ${recs.length} transactions into "${p.name}"?\n\nCredits: ${cr.length} (${signed(sum(cr))})\nDebits: ${dbt.length} (${signed(sum(dbt))})` + (skipped ? `\n\n${skipped} row(s) will be skipped (missing or unreadable date, description, or amount).` : ""))) return;
+  const who = auth.currentUser.email.split("@")[0], pid = activeId;
+  for (let i = 0; i < recs.length; i += 400) {
+    const b = db.batch();
+    recs.slice(i, i + 400).forEach(r => b.set(db.collection("expenses").doc(), { ...r, periodId: pid, addedBy: who, createdAt: firebase.firestore.FieldValue.serverTimestamp() }));
+    await b.commit();
+  }
+  alert(`Imported ${recs.length} transactions.`);
+}
 </script>
 </body>
 </html>
