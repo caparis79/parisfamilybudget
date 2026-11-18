@@ -25,7 +25,7 @@ button.link:hover{color:var(--ink)}
 .tabs{display:flex;gap:4px;overflow-x:auto;border-bottom:1px solid var(--line);margin-bottom:16px}
 .tab{border:0;border-bottom:3px solid transparent;border-radius:0;background:none;color:var(--muted);white-space:nowrap}
 .tab[aria-selected=true]{color:var(--ink);font-weight:600;border-bottom-color:var(--accent)}
-.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
+.stats{display:grid;grid-template-columns:1.6fr 1fr 1fr;gap:12px;align-items:center}
 .stats small{color:var(--muted);display:block}
 .stats b{font-size:1.5rem;letter-spacing:-.01em}
 .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;align-items:end}
@@ -48,8 +48,12 @@ tr:last-child td{border-bottom:0}
 .amtcell{display:flex;gap:4px}.amtcell select{width:58px}.amtcell input{min-width:80px}
 button[aria-pressed=true]{background:var(--accent);color:var(--accent-ink);border-color:var(--accent)}
 .subtbl{margin:2px 0 8px;font-size:.92rem}
+.stats .balance{background:#fff3a8;border:2px solid #f2c200;border-radius:8px;padding:10px 14px}
+.stats .balance small{color:var(--ink);font-weight:600}
+.stats .balance b{font-size:2.3rem}
+@media (prefers-color-scheme:dark){.stats .balance{background:rgba(250,204,21,.16);border-color:#d4a90a}}
 .track{flex:1;height:10px;background:var(--bg);border-radius:5px;overflow:hidden}.fill{height:100%;background:var(--accent)}
-@media (max-width:560px){.stats b{font-size:1.15rem}.wide{grid-column:span 1}}
+@media (max-width:560px){.stats{grid-template-columns:1fr 1fr}.stats .balance{grid-column:span 2}.stats .balance b{font-size:1.8rem}.stats b{font-size:1.15rem}.wide{grid-column:span 1}}
 </style>
 </head>
 <body>
@@ -77,9 +81,9 @@ button[aria-pressed=true]{background:var(--accent);color:var(--accent-ink);borde
 
   <div id="periodView" class="hidden">
     <div class="panel stats">
+      <div class="balance"><small>Balance</small><b class="num" id="sNet">$0.00</b></div>
       <div><small>Credits</small><b class="num pos" id="sCr">$0.00</b></div>
       <div><small>Debits</small><b class="num neg" id="sDb">$0.00</b></div>
-      <div><small>Balance</small><b class="num" id="sNet">$0.00</b></div>
     </div>
 
     <div class="tabs" id="views" role="tablist">
