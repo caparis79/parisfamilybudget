@@ -52,6 +52,9 @@ button[aria-pressed=true]{background:var(--accent);color:var(--accent-ink);borde
 .stats .balance small{color:var(--ink);font-weight:600}
 .stats .balance b{font-size:2.3rem}
 @media (prefers-color-scheme:dark){.stats .balance{background:rgba(250,204,21,.16);border-color:#d4a90a}}
+dialog{border:1px solid var(--line);border-radius:10px;background:var(--surface);color:var(--ink);max-width:640px;width:calc(100% - 24px);padding:16px}
+dialog::backdrop{background:rgba(0,0,0,.45)}dialog h2{font-size:1.15rem;margin:0 0 6px}
+#carryList{max-height:42vh;overflow:auto;margin:10px 0}#carryList label{margin:0;color:inherit;font-size:1rem}#carryList input{width:auto}
 .track{flex:1;height:10px;background:var(--bg);border-radius:5px;overflow:hidden}.fill{height:100%;background:var(--accent)}
 @media (max-width:560px){.stats{grid-template-columns:1fr 1fr}.stats .balance{grid-column:span 2}.stats .balance b{font-size:1.8rem}.stats b{font-size:1.15rem}.wide{grid-column:span 1}}
 </style>
@@ -123,6 +126,20 @@ button[aria-pressed=true]{background:var(--accent);color:var(--accent-ink);borde
   </div>
 </section>
 </main>
+<dialog id="carry">
+  <h2 id="carryTitle">Carry over transactions</h2>
+  <p class="note" style="margin:0 0 10px">Check the transactions to copy into this period, such as recurring bills or paychecks.</p>
+  <div class="grid">
+    <div class="wide"><label for="carrySrc">Copy from</label><select id="carrySrc"></select></div>
+    <div><label for="carryMonth">Use dates in</label><input type="month" id="carryMonth"></div>
+  </div>
+  <div id="carryList"></div>
+  <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+    <button id="carryAll">Select all</button><button id="carryNone">None</button><span class="note" id="carryCount"></span>
+    <span style="flex:1"></span>
+    <button id="carrySkip">Skip</button><button class="primary" id="carryGo" disabled>Add selected</button>
+  </div>
+</dialog>
 
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
@@ -181,7 +198,7 @@ function subscribePeriods() {
 
 function renderTabs() {
   $("tabs").innerHTML = periods.length
-    ? `<label for="periodSel" style="margin:0">Budget period</label><select id="periodSel">${periods.slice().reverse().map(p => `<option value="${p.id}"${p.id === activeId ? " selected" : ""}>${esc(p.name)}</option>`).join("")}</select><button id="newP">+ New period</button>`
+    ? `<label for="periodSel" style="margin:0">Budget period</label><select id="periodSel">${periods.slice().reverse().map(p => `<option value="${p.id}"${p.id === activeId ? " selected" : ""}>${esc(p.name)}</option>`).join("")}</select><button id="newP">+ New period</button><button class="link" id="renP">Rename</button><button class="link" id="delP">Delete</button>`
     : "";
   $("noPeriod").classList.toggle("hidden", periods.length > 0);
   $("periodView").classList.toggle("hidden", !periods.length);
@@ -189,7 +206,7 @@ function renderTabs() {
 function selectPeriod(id) {
   activeId = id; store.set(id); rowEditId = null; resetForm(); renderTabs(); subscribeTx();
 }
-$("tabs").onclick = e => { if (e.target.id === "newP") addPeriod(); };
+$("tabs").onclick = e => { const id = e.target.id; if (id === "newP") addPeriod(); else if (id === "renP") renamePeriod(); else if (id === "delP") deletePeriod(); };
 $("tabs").onchange = e => { if (e.target.id === "periodSel") selectPeriod(e.target.value); };
 $("firstPeriod").onclick = addPeriod;
 
@@ -198,8 +215,10 @@ async function addPeriod() {
   const def = d.toLocaleString("en-US", { month: "long", year: "numeric" });
   const name = (prompt("Name for the new budget period:", def) || "").trim();
   if (!name) return;
+  const prev = periods.slice(), prevActive = activeId;
   const ref = await db.collection("periods").add({ name, createdAt: firebase.firestore.FieldValue.serverTimestamp() });
   selectPeriod(ref.id);
+  if (prev.length) offerCarryOver(ref.id, name, prevActive, prev);
 }
 
 function subscribeTx() {
@@ -384,6 +403,76 @@ $("list").addEventListener("keydown", e => {
   if (e.key === "Enter") { e.preventDefault(); saveRow(e.target.closest("tr")); }
   if (e.key === "Escape") { rowEditId = null; render(); }
 });
+
+// ---- Rename / delete a period ----
+async function renamePeriod() {
+  const p = periods.find(p => p.id === activeId); if (!p) return;
+  const name = (prompt("Rename this budget period:", p.name) || "").trim();
+  if (!name || name === p.name) return;
+  try { await db.collection("periods").doc(p.id).update({ name }); } catch (e) { alert("Couldn't rename: " + e.message); }
+}
+async function deletePeriod() {
+  const p = periods.find(p => p.id === activeId); if (!p) return;
+  try {
+    const snap = await db.collection("expenses").where("periodId", "==", p.id).get();
+    if (!confirm(`Delete "${p.name}" and its ${snap.size} transaction${snap.size === 1 ? "" : "s"}? This can't be undone.`)) return;
+    for (let i = 0; i < snap.docs.length; i += 400) {
+      const b = db.batch(); snap.docs.slice(i, i + 400).forEach(d => b.delete(d.ref)); await b.commit();
+    }
+    await db.collection("periods").doc(p.id).delete();
+  } catch (e) { alert("Couldn't delete: " + e.message); }
+}
+
+// ---- Carry transactions into a new period ----
+let carry = { pid: null, rows: [] };
+const nextMonth = ym => { let [y, m] = ym.split("-").map(Number); m++; if (m > 12) { m = 1; y++; } return `${y}-${String(m).padStart(2, "0")}`; };
+async function offerCarryOver(newId, name, srcDefault, prev) {
+  try {
+    carry.pid = newId;
+    $("carryTitle").textContent = `Carry transactions into "${name}"`;
+    $("carrySrc").innerHTML = prev.slice().reverse().map(p => `<option value="${p.id}">${esc(p.name)}</option>`).join("");
+    $("carrySrc").value = prev.some(p => p.id === srcDefault) ? srcDefault : prev[prev.length - 1].id;
+    await loadCarry();
+    $("carry").showModal();
+  } catch (e) { console.error(e); }
+}
+async function loadCarry() {
+  $("carryList").innerHTML = `<p class="empty">Loading\u2026</p>`;
+  const snap = await db.collection("expenses").where("periodId", "==", $("carrySrc").value).get();
+  carry.rows = snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a, b) => a.date.localeCompare(b.date));
+  $("carryMonth").value = nextMonth((carry.rows.length ? carry.rows[carry.rows.length - 1].date : today()).slice(0, 7));
+  $("carryList").innerHTML = carry.rows.length ? `<table><tbody>` + carry.rows.map((x, i) =>
+    `<tr><td style="width:28px"><input type="checkbox" data-i="${i}" id="cr${i}"></td><td class="num">${showDate(x.date)}</td><td><label for="cr${i}">${esc(x.description)}</label></td><td class="note">${esc(x.categoryId ? catName(x.categoryId) : "")}</td><td class="r num amt ${x.amount < 0 ? "neg" : "pos"}">${signed(x.amount)}</td></tr>`).join("") + `</tbody></table>`
+    : `<p class="empty">That period has no transactions.</p>`;
+  updateCarryCount();
+}
+function updateCarryCount() {
+  const n = document.querySelectorAll("#carryList input:checked").length;
+  $("carryCount").textContent = `${n} selected`; $("carryGo").disabled = !n;
+}
+const setAllCarry = v => { document.querySelectorAll("#carryList input").forEach(c => c.checked = v); updateCarryCount(); };
+$("carryList").onchange = updateCarryCount;
+$("carrySrc").onchange = () => loadCarry().catch(e => alert("Couldn't load that period: " + e.message));
+$("carryAll").onclick = () => setAllCarry(true);
+$("carryNone").onclick = () => setAllCarry(false);
+$("carrySkip").onclick = () => $("carry").close();
+$("carryGo").onclick = async () => {
+  const ym = $("carryMonth").value; if (!ym) { alert("Pick the month for the new dates."); return; }
+  const [y, m] = ym.split("-").map(Number), last = new Date(y, m, 0).getDate();
+  const picks = [...document.querySelectorAll("#carryList input:checked")].map(c => carry.rows[+c.dataset.i]);
+  const who = auth.currentUser.email.split("@")[0];
+  try {
+    for (let i = 0; i < picks.length; i += 400) {
+      const b = db.batch();
+      picks.slice(i, i + 400).forEach(x => {
+        const day = Math.min(parseInt(x.date.slice(8), 10), last);
+        b.set(db.collection("expenses").doc(), { date: `${ym}-${String(day).padStart(2, "0")}`, description: x.description, notes: x.notes || "", amount: x.amount, categoryId: x.categoryId || null, periodId: carry.pid, addedBy: who, createdAt: firebase.firestore.FieldValue.serverTimestamp() });
+      });
+      await b.commit();
+    }
+    $("carry").close();
+  } catch (e) { alert("Couldn't add the transactions: " + e.message); }
+};
 
 // ---- Transactions / Categories views ----
 $("views").onclick = e => {
