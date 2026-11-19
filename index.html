@@ -58,6 +58,24 @@ dialog::backdrop{background:rgba(0,0,0,.45)}dialog h2{font-size:1.15rem;margin:0
 button.catbtn{display:flex;align-items:center;gap:8px;width:100%;text-align:left;padding:8px 4px;color:var(--ink);border-radius:4px}
 button.catbtn:hover{background:var(--bg)}.catbtn .nm{flex:1}.catbtn .arrow{width:12px;color:var(--muted)}.catbtn .pc{width:42px;text-align:right}
 .sw{width:12px;height:12px;border-radius:3px;flex:none;border:1px solid var(--line)}.catopen{padding:0 4px 10px 24px}
+.sortsel{display:none}
+@media (max-width:600px){
+  main{padding:12px 10px 40px}.panel{padding:12px}
+  .sortsel{display:block;width:auto;margin-right:auto;padding:6px 8px}
+  #list thead{display:none}#list table,#list tbody{display:block}
+  #list tr{display:grid;grid-template-columns:auto 1fr auto;grid-template-areas:"desc desc amt" "date cat act" "note note note";column-gap:8px;row-gap:3px;align-items:center;padding:9px 0;border-top:1px solid var(--line)}
+  #list tr:first-child{border-top:0}
+  #list td{display:block;padding:0;border:0;min-width:0}
+  #list td:empty{display:none}
+  #list td.c-desc{grid-area:desc;font-weight:600;overflow-wrap:anywhere}
+  #list td.c-amt{grid-area:amt;text-align:right;font-size:1.05rem}
+  #list td.c-date{grid-area:date;color:var(--muted);font-size:.88rem;white-space:nowrap}
+  #list td.c-cat{grid-area:cat}#list .rowcat{width:100%;min-width:0;padding:3px 6px;font-size:.9rem}
+  #list td.c-act{grid-area:act}#list td.c-note{grid-area:note;overflow-wrap:anywhere}
+  .subtbl,.subtbl tbody{display:block}
+  .subtbl tr{display:grid;grid-template-columns:auto 1fr auto;column-gap:8px;padding:3px 0}
+  .subtbl td{display:block;padding:0;border:0}.subtbl td:nth-child(4){grid-column:1/-1}.subtbl td:empty{display:none}
+}
 .track{flex:1;height:10px;background:var(--bg);border-radius:5px;overflow:hidden}.fill{height:100%;background:var(--accent)}
 @media (max-width:560px){.stats{grid-template-columns:1fr 1fr}.stats .balance{grid-column:span 2}.stats .balance b{font-size:1.8rem}.stats b{font-size:1.15rem}.wide{grid-column:span 1}}
 </style>
@@ -112,7 +130,7 @@ button.catbtn:hover{background:var(--bg)}.catbtn .nm{flex:1}.catbtn .arrow{width
     </div>
 
     <div class="panel">
-      <div style="display:flex;justify-content:flex-end;gap:8px;margin-bottom:6px"><button id="importBtn">Import CSV</button><input type="file" id="importFile" accept=".csv,text/csv" class="hidden"><button id="csv">Export CSV</button></div>
+      <div style="display:flex;justify-content:flex-end;gap:8px;margin-bottom:6px;align-items:center"><select id="sortSel" class="sortsel" aria-label="Sort transactions"><option value="date:-1">Newest first</option><option value="date:1">Oldest first</option><option value="amount:1">Biggest spending</option><option value="amount:-1">Biggest credits</option><option value="description:1">Description A to Z</option><option value="category:1">Category</option></select><button id="importBtn">Import CSV</button><input type="file" id="importFile" accept=".csv,text/csv" class="hidden"><button id="csv">Export CSV</button></div>
       <div class="scroll" id="list"></div>
     </div>
     </div>
@@ -380,17 +398,17 @@ $("breakdown").onclick = e => {
 // ---- Transaction rows, with in-place editing ----
 function rowHtml(x) {
   if (x.id === rowEditId) {
-    return `<tr class="editing"><td><input type="date" data-f="date" value="${esc(x.date)}"></td>
-      <td><input data-f="description" value="${esc(x.description)}"></td>
-      <td><select class="rowcat" data-f="categoryId">${catOptions(x.categoryId)}</select></td>
-      <td><div class="amtcell"><select data-f="type" aria-label="Debit or credit"><option value="debit"${x.amount < 0 ? " selected" : ""}>\u2212</option><option value="credit"${x.amount < 0 ? "" : " selected"}>+</option></select><input type="number" step="0.01" min="0" inputmode="decimal" data-f="amount" value="${Math.abs(x.amount)}"></div></td>
-      <td><input data-f="notes" value="${esc(x.notes || "")}"></td>
-      <td style="white-space:nowrap"><button class="link" data-save="1">Save</button><button class="link" data-cancel="1">Cancel</button></td></tr>`;
+    return `<tr class="editing"><td class="c-date"><input type="date" data-f="date" value="${esc(x.date)}"></td>
+      <td class="c-desc"><input data-f="description" value="${esc(x.description)}"></td>
+      <td class="c-cat"><select class="rowcat" data-f="categoryId">${catOptions(x.categoryId)}</select></td>
+      <td class="c-amt"><div class="amtcell"><select data-f="type" aria-label="Debit or credit"><option value="debit"${x.amount < 0 ? " selected" : ""}>\u2212</option><option value="credit"${x.amount < 0 ? "" : " selected"}>+</option></select><input type="number" step="0.01" min="0" inputmode="decimal" data-f="amount" value="${Math.abs(x.amount)}"></div></td>
+      <td class="c-note"><input data-f="notes" value="${esc(x.notes || "")}"></td>
+      <td class="c-act" style="white-space:nowrap"><button class="link" data-save="1">Save</button><button class="link" data-cancel="1">Cancel</button></td></tr>`;
   }
-  return `<tr><td class="num">${showDate(x.date)}</td><td>${esc(x.description)}</td><td><select class="rowcat" data-cat="${x.id}" aria-label="Category">${catOptions(x.categoryId)}</select></td>
-    <td class="r num amt ${x.amount < 0 ? "neg" : "pos"}">${signed(x.amount)}</td>
-    <td class="note">${esc(x.notes || "")}</td>
-    <td style="white-space:nowrap"><button class="link" data-edit="${x.id}">Edit</button><button class="link" data-del="${x.id}">Delete</button></td></tr>`;
+  return `<tr><td class="c-date num">${showDate(x.date)}</td><td class="c-desc">${esc(x.description)}</td><td class="c-cat"><select class="rowcat" data-cat="${x.id}" aria-label="Category">${catOptions(x.categoryId)}</select></td>
+    <td class="c-amt r num amt ${x.amount < 0 ? "neg" : "pos"}">${signed(x.amount)}</td>
+    <td class="c-note note">${esc(x.notes || "")}</td>
+    <td class="c-act" style="white-space:nowrap"><button class="link" data-edit="${x.id}">Edit</button><button class="link" data-del="${x.id}">Delete</button></td></tr>`;
 }
 async function saveRow(tr) {
   const v = f => tr.querySelector(`[data-f="${f}"]`).value;
@@ -566,6 +584,8 @@ async function importCsv(text) {
   }
   alert(`Imported ${recs.length} transactions.`);
 }
+
+$("sortSel").onchange = e => { const [k, d] = e.target.value.split(":"); sortKey = k; sortDir = +d; render(); };
 
 // ---- Show / hide amounts ----
 const SVG = d => `<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${d}</svg>`;
