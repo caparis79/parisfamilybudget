@@ -175,7 +175,11 @@ const firebaseConfig = {
   appId: "1:852729416469:web:be4fb801651cd6ebc7f71c"
 };
 firebase.initializeApp(firebaseConfig);
+// ---- Security settings (change these as you like) ----
+const IDLE_MINUTES = 10;            // sign out after this many minutes without activity (0 = never)
+const SIGN_IN_EVERY_VISIT = true;   // true = signed out when the tab or app is closed; false = stay signed in between visits
 const auth = firebase.auth(), db = firebase.firestore();
+auth.setPersistence(SIGN_IN_EVERY_VISIT ? firebase.auth.Auth.Persistence.SESSION : firebase.auth.Auth.Persistence.LOCAL).catch(() => {});
 const $ = id => document.getElementById(id);
 const esc = s => String(s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 let hideNums = false;
@@ -586,6 +590,19 @@ async function importCsv(text) {
 }
 
 $("sortSel").onchange = e => { const [k, d] = e.target.value.split(":"); sortKey = k; sortDir = +d; render(); };
+
+// ---- Auto sign-out after inactivity ----
+let lastActive = Date.now();
+const touch = () => { lastActive = Date.now(); };
+["click", "keydown", "touchstart", "mousemove", "scroll"].forEach(ev => window.addEventListener(ev, touch, { passive: true }));
+auth.onAuthStateChanged(u => { if (u) touch(); else if ($("carry").open) $("carry").close(); });
+function checkIdle() {
+  if (!IDLE_MINUTES || !auth.currentUser) return;
+  if (Date.now() - lastActive > IDLE_MINUTES * 60000)
+    auth.signOut().then(() => { $("loginErr").textContent = `You were signed out after ${IDLE_MINUTES} minutes of inactivity.`; });
+}
+setInterval(checkIdle, 15000);
+document.addEventListener("visibilitychange", () => { if (!document.hidden) checkIdle(); });
 
 // ---- Show / hide amounts ----
 const SVG = d => `<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${d}</svg>`;
